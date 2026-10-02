@@ -12,13 +12,27 @@ RPC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 }
 
+# A caller-selected rpc_url is a single, claimant-controllable authority: a
+# fake server returns fabricated-but-consistent tx/receipt JSON that every
+# validator fetches identically and happily agrees on. Binding to a fixed
+# identifier that resolves to 2+ independently-operated public endpoints
+# means a single compromised/lying source is caught by the OTHER source
+# disagreeing, not just by GenLayer's own validator-to-validator consensus.
+CHAIN_RPCS = {
+    "ethereum": ("https://ethereum-rpc.publicnode.com", "https://eth.llamarpc.com"),
+    "base": ("https://base-rpc.publicnode.com", "https://base.llamarpc.com"),
+    "arbitrum": ("https://arbitrum-one-rpc.publicnode.com", "https://arbitrum.llamarpc.com"),
+    "optimism": ("https://optimism-rpc.publicnode.com", "https://optimism.llamarpc.com"),
+    "polygon": ("https://polygon-bor-rpc.publicnode.com", "https://polygon.llamarpc.com"),
+}
+
 
 @allow_storage
 @dataclass
 class Transfer:
     creator: str
     created_at: u256
-    rpc_url: str
+    chain: str
     tx_hash: str
     expected_sender: str
     asset: str  # "native", or the ERC-20/721 contract address (lowercase hex, no 0x)
@@ -56,27 +70,25 @@ class Provenance(gl.Contract):
 
     Extracted from Salvage Arbiter's drain-transaction verification (built
     to satisfy exactly this bar: "verify the actual asset and balance
-    movement" was the steward feedback that shaped it), generalized so any
-    caller supplies their own `rpc_url` instead of one hardcoded chain -
-    the same caller-supplies-the-source move Concord made for price
-    checking. Anything that needs to gate on "did this specific transfer
-    really happen" - a cross-chain bridge claim, an escrow release, a
-    reimbursement, a reputation system - can call this instead of trusting
-    a claimant's word or rebuilding receipt-parsing from scratch.
+    movement" was the steward feedback that shaped it). A caller-supplied
+    rpc_url was rejected on resubmission: a claimant-controlled endpoint
+    can return fabricated-but-consistent tx/receipt JSON that every
+    validator agrees on, since they're all just trusting the same single
+    liar. Bound instead to `chain`, an identifier resolving to 2+
+    independently-operated public RPC endpoints (CHAIN_RPCS) that must
+    themselves agree before a validator's own result is even considered,
+    on top of GenLayer's existing validator-to-validator consensus.
 
-    verify_transfer(transfer_id, rpc_url, tx_hash, expected_sender)
-    fetches the transaction and its receipt from rpc_url, requires the
-    transaction to be real, successful, and genuinely sent from
+    verify_transfer(transfer_id, chain, tx_hash, expected_sender) fetches
+    the transaction and receipt from every endpoint for `chain`, requires
+    the transaction to be real, successful, and genuinely sent from
     expected_sender, then looks for an ERC-20/721 Transfer log naming that
     address as sender - not just any log - falling back to the
-    transaction's own native value if no such log exists. Validators
-    independently recompute the identical (asset, amount, destination) and
-    must agree byte-for-byte before consensus is reached; a transaction
-    that doesn't exist, didn't succeed, wasn't from expected_sender, or
-    moved nothing at all reverts cleanly rather than recording a false
-    attestation. Anyone can independently re-fetch the same rpc_url and
-    confirm the same facts themselves. No value ever moves through this
-    contract - it only attests that value moved elsewhere.
+    transaction's own native value if no such log exists. A transaction
+    that doesn't exist, didn't succeed, wasn't from expected_sender, moved
+    nothing, or gets inconsistent answers across endpoints reverts cleanly
+    rather than recording a false attestation. No value ever moves through
+    this contract - it only attests that value moved elsewhere.
     """
 
     transfers: TreeMap[str, Transfer]
@@ -134,21 +146,33 @@ class Provenance(gl.Contract):
         except (ValueError, AttributeError, TypeError, KeyError):
             return None
 
+    def _fetch_cross_checked(self, chain: str, tx_hash: str, sender_hex: str) -> dict | None:
+        """Every configured endpoint for `chain` must independently agree
+        on the exact same facts - a single lying or compromised RPC (even
+        a claimant's own) is caught here, before this result ever reaches
+        GenLayer's validator-to-validator consensus."""
+        endpoints = CHAIN_RPCS[chain]
+        first = self._fetch_tx_facts(endpoints[0], tx_hash, sender_hex)
+        for url in endpoints[1:]:
+            if self._fetch_tx_facts(url, tx_hash, sender_hex) != first:
+                return None
+        return first
+
     @gl.public.write
     def verify_transfer(
-        self, transfer_id: str, rpc_url: str, tx_hash: str, expected_sender: str
+        self, transfer_id: str, chain: str, tx_hash: str, expected_sender: str
     ) -> None:
         if transfer_id in self.transfers:
             raise gl.vm.UserError(f"Transfer '{transfer_id}' already verified")
-        if not rpc_url.startswith("https://"):
-            raise gl.vm.UserError("rpc_url must start with https://")
+        if chain not in CHAIN_RPCS:
+            raise gl.vm.UserError(f"Unsupported chain '{chain}' - must be one of {sorted(CHAIN_RPCS)}")
 
         sender_hex = expected_sender.lower().removeprefix("0x")
         if len(sender_hex) != 40:
             raise gl.vm.UserError("expected_sender must be a 20-byte hex address")
 
         def leader_fn() -> dict:
-            facts = self._fetch_tx_facts(rpc_url, tx_hash, sender_hex)
+            facts = self._fetch_cross_checked(chain, tx_hash, sender_hex)
             if facts is None:
                 return {"found": False, "asset": "", "amount": 0, "destination": "", "block_number": 0}
             return {"found": True, **facts}
@@ -175,7 +199,7 @@ class Provenance(gl.Contract):
         self.transfers[transfer_id] = Transfer(
             creator=gl.message.sender_address.as_hex,
             created_at=self._now(),
-            rpc_url=rpc_url,
+            chain=chain,
             tx_hash=tx_hash,
             expected_sender=sender_hex,
             asset=result["asset"],
@@ -192,7 +216,7 @@ class Provenance(gl.Contract):
         return {
             "creator": t.creator,
             "created_at": t.created_at,
-            "rpc_url": t.rpc_url,
+            "chain": t.chain,
             "tx_hash": t.tx_hash,
             "expected_sender": t.expected_sender,
             "asset": t.asset,

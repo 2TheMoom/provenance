@@ -5,7 +5,7 @@ import json
 from tests.direct.conftest import to_hex
 
 CONTRACT = "contracts/provenance.py"
-RPC_URL = "https://rpc.example/v1"
+CHAIN = "ethereum"
 TX_HASH = "0x" + "ab" * 32
 
 SENDER = "0x" + "11" * 20
@@ -105,11 +105,11 @@ def test_verify_transfer_native_value(direct_vm, direct_deploy, direct_alice):
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=5_000_000_000_000_000)
 
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     t = contract.get_transfer("t1")
     assert t["creator"] == to_hex(direct_alice)
-    assert t["rpc_url"] == RPC_URL
+    assert t["chain"] == CHAIN
     assert t["tx_hash"] == TX_HASH
     assert t["expected_sender"] == SENDER.removeprefix("0x").lower()
     assert t["asset"] == "native"
@@ -124,7 +124,7 @@ def test_verify_transfer_erc20_log(direct_vm, direct_deploy, direct_alice):
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=0, logs=[_transfer_log(amount=250_000)])
 
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     t = contract.get_transfer("t1")
     assert t["asset"] == TOKEN.removeprefix("0x").lower()
@@ -139,7 +139,7 @@ def test_verify_transfer_erc721_log(direct_vm, direct_deploy, direct_alice):
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=0, logs=[_nft_transfer_log(token_id=42)])
 
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     t = contract.get_transfer("t1")
     assert t["asset"] == TOKEN.removeprefix("0x").lower()
@@ -155,7 +155,7 @@ def test_verify_transfer_prefers_log_over_incidental_native_value(direct_vm, dir
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=1, logs=[_transfer_log(amount=250_000)])
 
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     t = contract.get_transfer("t1")
     assert t["asset"] == TOKEN.removeprefix("0x").lower()
@@ -167,7 +167,7 @@ def test_verify_transfer_ignores_unrelated_log_falls_back_to_native(direct_vm, d
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=100, logs=[_unrelated_log()])
 
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     assert contract.get_transfer("t1")["asset"] == "native"
 
@@ -179,7 +179,7 @@ def test_verify_transfer_ignores_approval_log_falls_back_to_native(direct_vm, di
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=100, logs=[_approval_log()])
 
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     assert contract.get_transfer("t1")["asset"] == "native"
 
@@ -191,7 +191,7 @@ def test_verify_transfer_wrong_sender_fails(direct_vm, direct_deploy, direct_ali
     _mock_tx(direct_vm, from_address=other, value_wei=100)
 
     with direct_vm.expect_revert("No genuine asset movement"):
-        contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+        contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     assert contract.is_verified("t1") is False
 
@@ -202,7 +202,7 @@ def test_verify_transfer_tx_not_found_fails(direct_vm, direct_deploy, direct_ali
     _mock_tx(direct_vm, found=False)
 
     with direct_vm.expect_revert("No genuine asset movement"):
-        contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+        contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
 
 def test_verify_transfer_reverted_tx_fails(direct_vm, direct_deploy, direct_alice):
@@ -211,7 +211,7 @@ def test_verify_transfer_reverted_tx_fails(direct_vm, direct_deploy, direct_alic
     _mock_tx(direct_vm, value_wei=100, status_success=False)
 
     with direct_vm.expect_revert("No genuine asset movement"):
-        contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+        contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
 
 def test_verify_transfer_no_value_no_log_fails(direct_vm, direct_deploy, direct_alice):
@@ -220,25 +220,28 @@ def test_verify_transfer_no_value_no_log_fails(direct_vm, direct_deploy, direct_
     _mock_tx(direct_vm, value_wei=0, logs=[])
 
     with direct_vm.expect_revert("No genuine asset movement"):
-        contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+        contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
 
 def test_verify_transfer_duplicate_id_fails(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy(CONTRACT)
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=100)
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     with direct_vm.expect_revert("already verified"):
-        contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+        contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
 
-def test_verify_transfer_non_https_rpc_fails(direct_vm, direct_deploy, direct_alice):
+def test_verify_transfer_unsupported_chain_fails(direct_vm, direct_deploy, direct_alice):
+    """A caller can no longer point verification at an arbitrary endpoint -
+    `chain` must resolve to the contract's own fixed, independently-
+    operated RPC set."""
     contract = direct_deploy(CONTRACT)
     direct_vm.sender = direct_alice
 
-    with direct_vm.expect_revert("must start with https://"):
-        contract.verify_transfer("t1", "http://rpc.example/v1", TX_HASH, SENDER)
+    with direct_vm.expect_revert("Unsupported chain"):
+        contract.verify_transfer("t1", "my-own-server", TX_HASH, SENDER)
 
 
 def test_verify_transfer_invalid_sender_format_fails(direct_vm, direct_deploy, direct_alice):
@@ -246,7 +249,34 @@ def test_verify_transfer_invalid_sender_format_fails(direct_vm, direct_deploy, d
     direct_vm.sender = direct_alice
 
     with direct_vm.expect_revert("20-byte hex address"):
-        contract.verify_transfer("t1", RPC_URL, TX_HASH, "not-an-address")
+        contract.verify_transfer("t1", CHAIN, TX_HASH, "not-an-address")
+
+
+def test_verify_transfer_disagreeing_rpcs_fails(direct_vm, direct_deploy, direct_alice):
+    """The whole point of binding to 2+ independent sources: if a caller
+    controls (or has compromised) one of them, it can return
+    fabricated-but-internally-consistent data all day - it just has to
+    disagree with the OTHER, genuinely independent source to be caught."""
+    contract = direct_deploy(CONTRACT)
+    direct_vm.sender = direct_alice
+
+    def body(from_addr, value_wei):
+        tx = {"from": from_addr, "to": DESTINATION, "value": hex(value_wei), "blockNumber": hex(1), "hash": TX_HASH}
+        return json.dumps({"jsonrpc": "2.0", "id": 1, "result": tx})
+
+    def receipt_body():
+        return json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"status": "0x1", "logs": []}})
+
+    direct_vm.mock_web(r"publicnode\.com.*call=tx", {"method": "POST", "status": 200, "body": body(SENDER, 100)})
+    direct_vm.mock_web(r"publicnode\.com.*call=receipt", {"method": "POST", "status": 200, "body": receipt_body()})
+    # A second, independent source reporting a DIFFERENT amount for the same tx.
+    direct_vm.mock_web(r"llamarpc\.com.*call=tx", {"method": "POST", "status": 200, "body": body(SENDER, 999)})
+    direct_vm.mock_web(r"llamarpc\.com.*call=receipt", {"method": "POST", "status": 200, "body": receipt_body()})
+
+    with direct_vm.expect_revert("No genuine asset movement"):
+        contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
+
+    assert contract.is_verified("t1") is False
 
 
 def test_get_transfer_unknown_fails(direct_vm, direct_deploy):
@@ -264,11 +294,11 @@ def test_independent_transfers_track_separately(direct_vm, direct_deploy, direct
     contract = direct_deploy(CONTRACT)
     direct_vm.sender = direct_alice
     _mock_tx(direct_vm, value_wei=100)
-    contract.verify_transfer("t1", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t1", CHAIN, TX_HASH, SENDER)
 
     direct_vm.clear_mocks()
     _mock_tx(direct_vm, value_wei=0, logs=[_transfer_log(amount=999)])
-    contract.verify_transfer("t2", RPC_URL, TX_HASH, SENDER)
+    contract.verify_transfer("t2", CHAIN, TX_HASH, SENDER)
 
     assert contract.get_transfer("t1")["asset"] == "native"
     assert contract.get_transfer("t2")["amount"] == 999
